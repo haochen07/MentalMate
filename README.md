@@ -1,4 +1,3 @@
-# README.md
 # Fine-tuning Qwen3-8B for Mental Therapy Conversations
 
 This repository contains code for fine-tuning the Qwen3-8B model on the [Mental Therapy Dataset](https://huggingface.co/datasets/vibhorag101/phr_mental_therapy_dataset) using Hugging Face's SFT Trainer and Unsloth for acceleration. Training metrics are tracked using Weights & Biases (WandB).

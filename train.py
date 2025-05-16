@@ -11,23 +11,17 @@ import torch
 import random
 import numpy as np
 from datetime import datetime
+from datasets import load_dataset
 from trl import SFTConfig, SFTTrainer
-from unsloth import FastModel
+from unsloth import FastLanguageModel
 import wandb
 
-# Import shared configuration
-from config import BASE_MODEL_NAME, MAX_SEQ_LENGTH, OUTPUT_DIR, TEST_SET_PATH
+from config import BASE_MODEL_NAME, DATASET_NAME, MAX_SEQ_LENGTH, OUTPUT_DIR, RANDOM_SEED
+from data_processor import parse_conversation_format, split_and_save_test_set, log_example_conversations
 
-# Import data processing utilities
-from data_processor import load_and_process_dataset, save_test_set, log_example_conversations
-
-# Constants used multiple times in this file
-RANDOM_SEED = 42
 LORA_RANK = 16
-LORA_ALPHA = 16
-PROJECT_NAME = "qwen3-therapy"
+LORA_ALPHA = 32
 
-# Set up logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -36,10 +30,9 @@ logging.basicConfig(
         logging.FileHandler("finetune.log")
     ]
 )
-logger = logging.getLogger("qwen3-finetune")
+logger = logging.getLogger("MentalMate-Qwen3-8B")
 
 def set_seed(seed):
-    """Set all seeds for reproducibility"""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -48,19 +41,7 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def init_wandb(config):
-    """Initialize Weights & Biases tracking"""
-    run_name = f"qwen3-therapy-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    wandb.init(
-        project=PROJECT_NAME,
-        config=config,
-        name=run_name,
-    )
-    logger.info(f"WandB initialized with run name: {run_name}")
-    return run_name
-
-def get_available_device():
-    """Returns the best available device for training"""
+def check_available_device():
     if torch.cuda.is_available():
         device_count = torch.cuda.device_count()
         logger.info(f"Found {device_count} CUDA device(s)")
@@ -69,35 +50,10 @@ def get_available_device():
             gpu_props = torch.cuda.get_device_properties(i)
             memory_mb = gpu_props.total_memory / (1024 * 1024)
             logger.info(f"GPU {i}: {gpu_props.name}, {memory_mb:.0f}MB memory")
-        
         return "cuda"
-    elif torch.backends.mps.is_available():
-        logger.info("CUDA not available, using Apple MPS (Metal)")
-        return "mps"
+    
     else:
-        logger.warning("No GPU found, using CPU. Training will be very slow!")
-        return "cpu"
-
-def count_model_parameters(model):
-    """Count and log the number of parameters in the model"""
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    
-    logger.info(f"Model has {total_params:,} total parameters")
-    logger.info(f"Model has {trainable_params:,} trainable parameters ({trainable_params/total_params*100:.2f}%)")
-    
-    # Log to wandb
-    wandb.log({
-        "total_parameters": total_params,
-        "trainable_parameters": trainable_params,
-        "trainable_percentage": trainable_params/total_params*100
-    })
-    
-    return {
-        "total_params": total_params,
-        "trainable_params": trainable_params,
-        "trainable_percentage": trainable_params/total_params*100
-    }
+        raise Exception(f"Could not find available CUDA device")
 
 def create_experiment_dir(base_dir, run_name):
     """Create a unique directory for this experiment"""
@@ -115,17 +71,20 @@ def log_artifacts(model_dir):
     """Log model artifacts to wandb"""
     # Log the model as an artifact
     model_artifact = wandb.Artifact(
-        name=f"qwen3-therapy-model",
+        name=f"MentalMate-Qwen3-8B",
         type="model",
-        description="Fine-tuned Qwen3-8B model for mental therapy"
+        description="MentalMate-Qwen3-8B model for mental therapy"
     )
     model_artifact.add_dir(model_dir)
     wandb.log_artifact(model_artifact)
 
 def main():
-    # Record start time
+    # Fine-tuning starts
     start_time = datetime.now()
     logger.info(f"Starting fine-tuning at {start_time}")
+
+    # Define run id
+    run_name = f"MentalMate-Qwen3-8B-{start_time.strftime('%Y%m%d_%H%M%S')}"
     
     # Set random seed for reproducibility
     set_seed(RANDOM_SEED)
@@ -144,28 +103,36 @@ def main():
         "load_in_4bit": True,
         "use_gradient_checkpointing": True,
     }
-    run_name = init_wandb(wandb_config)
+    wandb.init(
+        project="MentalMate-Qwen3-8B",
+        config=wandb_config,
+        name=run_name,
+    )
+    logger.info(f"WandB initialized with run name: {run_name}")
     
     # Get available device
-    device = get_available_device()
+    device = check_available_device()
     wandb.log({"device": device})
     
     # Create experiment directory
     exp_dir = create_experiment_dir(OUTPUT_DIR, run_name)
-    
-    # Load and process dataset
-    processed_datasets = load_and_process_dataset(random_seed=RANDOM_SEED)
-    
-    # Log example conversations
-    log_example_conversations(processed_datasets["test"])
-    
-    # Save the test set
+    model_output_dir = os.path.join(exp_dir, "model")
     test_set_path = os.path.join(exp_dir, "test_set")
-    save_test_set(processed_datasets["test"], test_set_path)
     
+    # Load dataset
+    logger.info(f"Loading dataset: {DATASET_NAME}")
+    dataset = load_dataset(DATASET_NAME, split = "train")
+
+    # Convert dataset into default chat template
+    logger.info("Processing dataset...")
+    processed_dataset = dataset.map(parse_conversation_format, batched = True)
+
+    # Decouple test data and save to disk
+    tuning_dataset = split_and_save_test_set(processed_dataset, test_set_path)
+
     # Load the Qwen3-8B model with Unsloth
     logger.info(f"Loading {BASE_MODEL_NAME} model...")
-    model, tokenizer = FastModel.from_pretrained(
+    model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=BASE_MODEL_NAME,
         max_seq_length=MAX_SEQ_LENGTH,
         dtype=None,  # Auto-detect the best dtype
@@ -173,31 +140,40 @@ def main():
         load_in_8bit=False,
         full_finetuning=False,
     )
-    
-    # Count model parameters
-    count_model_parameters(model)
-    
-    # Target modules for LoRA
-    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+    # Convert to Qwen chat template
+    tuning_dataset_qwen = tokenizer.apply_chat_template(
+        tuning_dataset["messages"],
+        tokenize = False,
+        add_generation_prompt = False,  # No need for training
+        enable_thinking = False         # Dataset contains no reasoning data
+    )
+
+    # Split data into train and validation sets
+    train_eval_set = tuning_dataset_qwen.train_test_split(
+        test_size = int(0.1 * len(tuning_dataset_qwen)),
+        shuffle = True, 
+        seed = RANDOM_SEED
+    )
+
+    # Log few example conversations
+    log_example_conversations(train_eval_set["train"])
     
     # Enable wandb to watch model parameters and gradients
     wandb.watch(model, log="all", log_freq=10)
     
     # Configure model for LoRA fine-tuning
     logger.info(f"Applying LoRA configuration (rank={LORA_RANK})...")
-    model = FastModel.get_peft_model(
+    model = FastLanguageModel.get_peft_model(
         model,
         r=LORA_RANK,
-        target_modules=target_modules,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         lora_alpha=LORA_ALPHA,
         lora_dropout=0,  # Optimized in Unsloth
         bias="none",  # Optimized in Unsloth
         use_gradient_checkpointing=True,
         random_state=RANDOM_SEED,
     )
-    
-    # Create output path for model checkpoints
-    model_output_dir = os.path.join(exp_dir, "model")
     
     # Configure SFT training arguments
     logger.info("Configuring training arguments...")
@@ -232,8 +208,8 @@ def main():
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
-        train_dataset=processed_datasets["train"],
-        eval_dataset=processed_datasets["validation"],
+        train_dataset=train_eval_set["train"],
+        eval_dataset=train_eval_set["test"],
         args=training_args,
     )
     
@@ -246,10 +222,6 @@ def main():
         "final_loss": trainer_stats.training_loss,
         "training_steps": trainer_stats.global_step
     })
-    
-    # After training, prepare model for inference
-    logger.info("Preparing model for inference...")
-    FastModel.for_inference(model)
     
     # Save the model (LoRA adapter only)
     adapter_path = os.path.join(model_output_dir, "lora_adapter")

@@ -2,7 +2,7 @@
 # run.sh - Simple script for running the training process
 
 echo "========================================="
-echo "Qwen3-8B Mental Therapy Model Fine-tuning"
+echo "Qwen3-8B MentalMate Model Fine-tuning"
 echo "========================================="
 
 # Check if Python is installed
