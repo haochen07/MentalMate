@@ -7,7 +7,7 @@ import re
 import wandb
 
 # Import shared configuration
-from config import RANDOM_SEED
+from config import RANDOM_SEED, TEST_SET_PATH
 
 # Set up logging
 logger = logging.getLogger("qwen3-finetune.data")
@@ -46,52 +46,16 @@ def parse_conversation_format(examples):
     
     return {"messages": messages}
 
-def split_and_save_test_set(dataset, test_set_path):
-    logger.info("Splitting dataset into train, validation, and test sets...")
+def split_and_save_test_set(dataset):
     splits = dataset.train_test_split(
         test_size = 2000,
         shuffle = True, 
         seed = RANDOM_SEED
     )
-    save_test_set(splits["test"], test_set_path)
-    return splits["train"]
 
-def save_test_set(test_dataset, output_path):
-    """
-    Save the test set to disk
-    
-    Args:
-        test_dataset: The test dataset to save
-        output_path: Path where to save the test set
-    """
-    test_dataset.save_to_disk(output_path)
-    logger.info(f"Test set saved to '{output_path}'")
+    train_eval_set = splits["train"]
+    test_set = splits["test"]
 
-def log_example_conversations(dataset, num_examples=3):
-    """
-    Log a few example conversations to wandb for reference
-    
-    Args:
-        dataset: Dataset containing conversations
-        num_examples: Number of examples to log
-    """
-    if wandb.run is None:
-        return
-        
-    examples = []
-    
-    for i, example in enumerate(dataset[:num_examples]):
-        messages = example["messages"]
-        conversation = []
-        
-        for msg in messages:
-            conversation.append(f"{msg['role'].upper()}: {msg['content'][:100]}...")
-        
-        examples.append("<br>".join(conversation))
-    
-    # Log to wandb as a Table
-    example_table = wandb.Table(columns=["Example Conversation"])
-    for example in examples:
-        example_table.add_data(example)
-    
-    wandb.log({"example_conversations": example_table})
+    test_set.save_to_disk(TEST_SET_PATH)
+    logger.info(f"Test set saved to '{TEST_SET_PATH}'")
+    return train_eval_set

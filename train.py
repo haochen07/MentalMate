@@ -17,7 +17,7 @@ from unsloth import FastLanguageModel
 import wandb
 
 from config import BASE_MODEL_NAME, DATASET_NAME, MAX_SEQ_LENGTH, OUTPUT_DIR, RANDOM_SEED
-from data_processor import parse_conversation_format, split_and_save_test_set, log_example_conversations
+from data_processor import parse_conversation_format, split_and_save_test_set
 
 LORA_RANK = 16
 LORA_ALPHA = 32
@@ -32,15 +32,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("MentalMate-Qwen3-8B")
 
-def set_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
 def check_available_device():
     if torch.cuda.is_available():
         device_count = torch.cuda.device_count()
@@ -49,9 +40,7 @@ def check_available_device():
         for i in range(device_count):
             gpu_props = torch.cuda.get_device_properties(i)
             memory_mb = gpu_props.total_memory / (1024 * 1024)
-            logger.info(f"GPU {i}: {gpu_props.name}, {memory_mb:.0f}MB memory")
-        return "cuda"
-    
+            logger.info(f"GPU {i}: {gpu_props.name}, {memory_mb:.0f}MB memory")    
     else:
         raise Exception(f"Could not find available CUDA device")
 
@@ -86,9 +75,9 @@ def main():
     # Define run id
     run_name = f"MentalMate-Qwen3-8B-{start_time.strftime('%Y%m%d_%H%M%S')}"
     
-    # Set random seed for reproducibility
-    set_seed(RANDOM_SEED)
-    
+    # Get available device
+    check_available_device()
+
     # Initialize wandb with config
     wandb_config = {
         "model_name": BASE_MODEL_NAME,
@@ -110,25 +99,17 @@ def main():
     )
     logger.info(f"WandB initialized with run name: {run_name}")
     
-    # Get available device
-    device = check_available_device()
-    wandb.log({"device": device})
-    
     # Create experiment directory
     exp_dir = create_experiment_dir(OUTPUT_DIR, run_name)
     model_output_dir = os.path.join(exp_dir, "model")
-    test_set_path = os.path.join(exp_dir, "test_set")
     
     # Load dataset
     logger.info(f"Loading dataset: {DATASET_NAME}")
     dataset = load_dataset(DATASET_NAME, split = "train")
 
-    # Convert dataset into default chat template
-    logger.info("Processing dataset...")
-    processed_dataset = dataset.map(parse_conversation_format, batched = True)
-
     # Decouple test data and save to disk
-    tuning_dataset = split_and_save_test_set(processed_dataset, test_set_path)
+    logger.info("Splitting dataset into train, validation, and test sets...")
+    tuning_dataset_raw = split_and_save_test_set(dataset)
 
     # Load the Qwen3-8B model with Unsloth
     logger.info(f"Loading {BASE_MODEL_NAME} model...")
@@ -143,7 +124,8 @@ def main():
 
     # Convert to Qwen chat template
     tuning_dataset_qwen = tokenizer.apply_chat_template(
-        tuning_dataset["messages"],
+        # Map to HuggingFace standard chat message structure before applying Qwen chat template
+        tuning_dataset_raw.map(parse_conversation_format, batched = True)["messages"],
         tokenize = False,
         add_generation_prompt = False,  # No need for training
         enable_thinking = False         # Dataset contains no reasoning data
@@ -155,9 +137,8 @@ def main():
         shuffle = True, 
         seed = RANDOM_SEED
     )
-
-    # Log few example conversations
-    log_example_conversations(train_eval_set["train"])
+    train_set = train_eval_set["train"]
+    eval_set = train_eval_set["test"]
     
     # Enable wandb to watch model parameters and gradients
     wandb.watch(model, log="all", log_freq=10)
@@ -169,8 +150,8 @@ def main():
         r=LORA_RANK,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
         lora_alpha=LORA_ALPHA,
-        lora_dropout=0,  # Optimized in Unsloth
-        bias="none",  # Optimized in Unsloth
+        lora_dropout=0,     # Optimized in Unsloth
+        bias="none",        # Optimized in Unsloth
         use_gradient_checkpointing=True,
         random_state=RANDOM_SEED,
     )
@@ -198,7 +179,7 @@ def main():
         weight_decay=0.01,
         lr_scheduler_type="linear",
         seed=RANDOM_SEED,
-        report_to="wandb",  # Use wandb instead of tensorboard
+        report_to="wandb",              # use wandb for training monitoring
         load_best_model_at_end=True,
         packing=False,
         dataset_num_proc=4,
@@ -208,8 +189,8 @@ def main():
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
-        train_dataset=train_eval_set["train"],
-        eval_dataset=train_eval_set["test"],
+        train_dataset=train_set,
+        eval_dataset=eval_set,
         args=training_args,
     )
     

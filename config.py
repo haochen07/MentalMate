@@ -8,11 +8,12 @@ Contains values that need to be consistent across different scripts.
 BASE_MODEL_NAME = "unsloth/Qwen3-8B"
 MAX_SEQ_LENGTH = 2048
 
-# Paths
-OUTPUT_DIR = "./qwen3-8b-therapy-finetuned"
-TEST_SET_PATH = "therapy_test_set"
-
 # Dataset information
 DATASET_NAME = "vibhorag101/phr_mental_therapy_dataset"
 
+# Paths
+OUTPUT_DIR = "./mentalmate-qwen3-8b-finetuned"
+TEST_SET_PATH = OUTPUT_DIR + "/test-set"
+
+# Random seed for reproductivity
 RANDOM_SEED = 42

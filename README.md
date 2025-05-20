@@ -147,7 +147,3 @@ qwen3-8b-therapy-finetuned/
 ```
 
 Additionally, all artifacts are logged to Weights & Biases for easy access and version tracking.
-
-## License
-
-This project code is provided for educational purposes. Use of the Qwen3-8B model is subject to its original license.
